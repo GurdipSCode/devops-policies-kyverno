@@ -1,6 +1,7 @@
 import jetbrains.buildServer.configs.kotlin.*
 import jetbrains.buildServer.configs.kotlin.buildSteps.nodeJS
 import jetbrains.buildServer.configs.kotlin.buildSteps.powerShell
+import jetbrains.buildServer.configs.kotlin.buildSteps.script
 import jetbrains.buildServer.configs.kotlin.vcs.GitVcsRoot
 
 /*
@@ -52,6 +53,17 @@ object Build : BuildType({
             scriptMode = script {
                 content = """yamllint -c .yamllint.yml .\policies\"""
             }
+        }
+        script {
+            name = "Validate Kyverno files"
+            id = "Validate_Kyverno_files"
+            scriptContent = """
+                # Validate all policy files
+                for policy_file in ${'$'}(find policies -name "*.yaml" -type f); do
+                    echo "Validating: ${'$'}policy_file"
+                    kyverno validate "${'$'}policy_file"
+                done
+            """.trimIndent()
         }
     }
 })
