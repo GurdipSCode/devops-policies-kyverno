@@ -60,6 +60,24 @@ object Build : BuildType({
                 done
             """.trimIndent()
         }
+        script {
+            name = "Execute GitGuardian"
+            id = "Execute_GitGuardian"
+            scriptContent = """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                
+                # Ensure the GitGuardian directory exists
+                if [ ! -d "${'$'}GitGuardianDir" ]; then
+                    mkdir -p "${'$'}GitGuardianDir"
+                fi
+                
+                # Run the scan and save to SARIF file
+                ggshield secret scan commit-range HEAD~1 --format sarif \
+                    | jq '.' \
+                    | tee "${'$'}GitGuardianDir/results.sarif" >/dev/null
+            """.trimIndent()
+        }
     }
 })
 
