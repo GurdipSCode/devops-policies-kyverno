@@ -1,0 +1,345 @@
+# Database and Stateful Workload Policies
+# Policies for databases and stateful applications
+
+---
+# Require PVC for StatefulSets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-statefulset-pvc
+  annotations:
+    policies.kyverno.io/title: Require StatefulSet PVC
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: StatefulSet
+    policies.kyverno.io/description: >-
+      Ensures StatefulSets have volume claim templates for persistent storage.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-volume-claim-templates
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+      validate:
+        message: "StatefulSets should have volumeClaimTemplates for persistent storage."
+        pattern:
+          spec:
+            volumeClaimTemplates:
+              - metadata:
+                  name: "?*"
+                spec:
+                  accessModes:
+                    - "?*"
+
+---
+# Require anti-affinity for database StatefulSets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-database-antiaffinity
+  annotations:
+    policies.kyverno.io/title: Require Database Anti-Affinity
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: StatefulSet
+    policies.kyverno.io/description: >-
+      Database StatefulSets must have pod anti-affinity for HA.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-antiaffinity
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+              selector:
+                matchLabels:
+                  app.kubernetes.io/component: database
+      validate:
+        message: "Database StatefulSets must have pod anti-affinity."
+        pattern:
+          spec:
+            template:
+              spec:
+                affinity:
+                  podAntiAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      - topologyKey: "?*"
+
+---
+# Require backup annotations for databases
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-backup-annotations
+  annotations:
+    policies.kyverno.io/title: Require Backup Annotations
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: StatefulSet
+    policies.kyverno.io/description: >-
+      Database StatefulSets must have backup configuration annotations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-backup-config
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+              selector:
+                matchLabels:
+                  app.kubernetes.io/component: database
+      validate:
+        message: "Database StatefulSets must have backup annotations."
+        pattern:
+          metadata:
+            annotations:
+              backup.company.com/enabled: "true"
+              backup.company.com/schedule: "?*"
+              backup.company.com/retention: "?*"
+
+---
+# Add database backup labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-database-backup-labels
+  annotations:
+    policies.kyverno.io/title: Add Database Backup Labels
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/subject: StatefulSet
+    policies.kyverno.io/description: >-
+      Adds backup-related labels to database StatefulSets.
+spec:
+  rules:
+    - name: add-backup-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+              selector:
+                matchLabels:
+                  app.kubernetes.io/component: database
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(backup.company.com/enabled): "true"
+            annotations:
+              +(backup.company.com/schedule): "0 2 * * *"
+              +(backup.company.com/retention): "7d"
+
+---
+# Validate PostgreSQL Operator resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-postgresql
+  annotations:
+    policies.kyverno.io/title: Validate PostgreSQL Resources
+    policies.kyverno.io/category: Databases
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: postgresql
+    policies.kyverno.io/description: >-
+      Validates PostgreSQL operator custom resources.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-replicas
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql
+      validate:
+        message: "PostgreSQL clusters must have at least 2 replicas for HA."
+        pattern:
+          spec:
+            numberOfInstances: ">=2"
+    - name: require-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql
+      validate:
+        message: "PostgreSQL resources must be specified."
+        pattern:
+          spec:
+            resources:
+              requests:
+                cpu: "?*"
+                memory: "?*"
+
+---
+# Validate MongoDB resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-mongodb
+  annotations:
+    policies.kyverno.io/title: Validate MongoDB Resources
+    policies.kyverno.io/category: Databases
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: MongoDBCommunity
+    policies.kyverno.io/description: >-
+      Validates MongoDB operator custom resources.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-replica-set
+      match:
+        any:
+          - resources:
+              kinds:
+                - MongoDBCommunity
+      validate:
+        message: "MongoDB must be configured as replica set with at least 3 members."
+        pattern:
+          spec:
+            members: ">=3"
+            type: "ReplicaSet"
+    - name: require-authentication
+      match:
+        any:
+          - resources:
+              kinds:
+                - MongoDBCommunity
+      validate:
+        message: "MongoDB must have authentication enabled."
+        pattern:
+          spec:
+            security:
+              authentication:
+                modes:
+                  - "SCRAM"
+
+---
+# Validate Redis resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-redis
+  annotations:
+    policies.kyverno.io/title: Validate Redis Resources
+    policies.kyverno.io/category: Databases
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: RedisCluster
+    policies.kyverno.io/description: >-
+      Validates Redis operator custom resources.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-persistence
+      match:
+        any:
+          - resources:
+              kinds:
+                - RedisCluster
+      validate:
+        message: "Redis clusters should have persistence enabled."
+        pattern:
+          spec:
+            storage:
+              persistentVolumeClaim:
+                spec:
+                  accessModes:
+                    - "?*"
+
+---
+# Require PodDisruptionBudget for StatefulSets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pdb-for-statefulset
+  annotations:
+    policies.kyverno.io/title: Require PDB for StatefulSet
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: StatefulSet
+    policies.kyverno.io/description: >-
+      StatefulSets with multiple replicas require a PodDisruptionBudget.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: require-pdb
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.replicas }}"
+            operator: GreaterThan
+            value: 1
+          - key: "{{ request.operation || 'BACKGROUND' }}"
+            operator: Equals
+            value: CREATE
+      context:
+        - name: pdb_count
+          apiCall:
+            urlPath: "/apis/policy/v1/namespaces/{{request.namespace}}/poddisruptionbudgets"
+            jmesPath: "items[?spec.selector.matchLabels == `{{request.object.spec.selector.matchLabels}}`] | length(@)"
+      validate:
+        message: "StatefulSets with multiple replicas require a PodDisruptionBudget."
+        deny:
+          conditions:
+            any:
+              - key: "{{ pdb_count }}"
+                operator: LessThan
+                value: 1
+
+---
+# Generate PDB for StatefulSets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-pdb-for-statefulset
+  annotations:
+    policies.kyverno.io/title: Generate PDB for StatefulSet
+    policies.kyverno.io/category: Stateful Workloads
+    policies.kyverno.io/subject: PodDisruptionBudget
+    policies.kyverno.io/description: >-
+      Automatically generates PodDisruptionBudget for StatefulSets.
+spec:
+  rules:
+    - name: generate-pdb
+      match:
+        any:
+          - resources:
+              kinds:
+                - StatefulSet
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.replicas }}"
+            operator: GreaterThan
+            value: 1
+      generate:
+        apiVersion: policy/v1
+        kind: PodDisruptionBudget
+        name: "{{request.object.metadata.name}}-pdb"
+        namespace: "{{request.namespace}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels: "{{request.object.spec.selector.matchLabels}}"

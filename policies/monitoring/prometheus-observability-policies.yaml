@@ -1,0 +1,302 @@
+# Monitoring and Observability Policies
+# Policies for Prometheus, Grafana, and observability governance
+
+---
+# Require Prometheus annotations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-prometheus-annotations
+  annotations:
+    policies.kyverno.io/title: Require Prometheus Annotations
+    policies.kyverno.io/category: Monitoring, Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod, Service
+    policies.kyverno.io/description: >-
+      Ensures Pods and Services have Prometheus scrape annotations
+      for metrics collection.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-scrape-annotations
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+              namespaces:
+                - "!kube-*"
+                - "!monitoring"
+      validate:
+        message: "Services should have Prometheus scrape annotations for observability."
+        pattern:
+          metadata:
+            annotations:
+              prometheus.io/scrape: "true"
+              prometheus.io/port: "?*"
+
+---
+# Add default Prometheus annotations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-prometheus-annotations
+  annotations:
+    policies.kyverno.io/title: Add Prometheus Annotations
+    policies.kyverno.io/category: Monitoring
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Automatically adds default Prometheus scrape annotations to Pods.
+spec:
+  rules:
+    - name: add-scrape-annotations
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  metrics-enabled: "true"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(prometheus.io/scrape): "true"
+              +(prometheus.io/port): "8080"
+              +(prometheus.io/path): "/metrics"
+
+---
+# Validate ServiceMonitor configurations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-servicemonitor
+  annotations:
+    policies.kyverno.io/title: Validate ServiceMonitor
+    policies.kyverno.io/category: Monitoring, Prometheus
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: ServiceMonitor
+    policies.kyverno.io/description: >-
+      Validates Prometheus ServiceMonitor configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-namespace-selector
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceMonitor
+      validate:
+        message: "ServiceMonitor should specify namespace selector to limit scope."
+        pattern:
+          spec:
+            namespaceSelector:
+              any: true | matchNames: ["?*"]
+    - name: require-scrape-interval
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceMonitor
+      validate:
+        message: "ServiceMonitor should specify scrape interval."
+        pattern:
+          spec:
+            endpoints:
+              - interval: "?*"
+
+---
+# Generate ServiceMonitor for services
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-servicemonitor
+  annotations:
+    policies.kyverno.io/title: Generate ServiceMonitor
+    policies.kyverno.io/category: Monitoring, Prometheus
+    policies.kyverno.io/subject: ServiceMonitor
+    policies.kyverno.io/description: >-
+      Automatically generates ServiceMonitor for services with metrics label.
+spec:
+  rules:
+    - name: generate-sm
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+              selector:
+                matchLabels:
+                  metrics-enabled: "true"
+      generate:
+        apiVersion: monitoring.coreos.com/v1
+        kind: ServiceMonitor
+        name: "{{request.object.metadata.name}}-monitor"
+        namespace: "{{request.namespace}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            selector:
+              matchLabels:
+                app: "{{request.object.metadata.labels.app}}"
+            namespaceSelector:
+              matchNames:
+                - "{{request.namespace}}"
+            endpoints:
+              - port: metrics
+                interval: 30s
+                path: /metrics
+
+---
+# Validate PrometheusRule configurations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-prometheusrule
+  annotations:
+    policies.kyverno.io/title: Validate PrometheusRule
+    policies.kyverno.io/category: Monitoring, Prometheus
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PrometheusRule
+    policies.kyverno.io/description: >-
+      Validates Prometheus alerting rules configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-severity-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - PrometheusRule
+      validate:
+        message: "Prometheus alerts must have a severity label."
+        pattern:
+          spec:
+            groups:
+              - rules:
+                  - =(alert): "?*"
+                    labels:
+                      severity: "critical | warning | info"
+    - name: require-runbook
+      match:
+        any:
+          - resources:
+              kinds:
+                - PrometheusRule
+      validate:
+        message: "Critical alerts should have a runbook URL."
+        foreach:
+          - list: "request.object.spec.groups[].rules[?alert && labels.severity == 'critical']"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.annotations.runbook_url || '' }}"
+                    operator: Equals
+                    value: ""
+
+---
+# Require logging sidecar for specific apps
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-logging-sidecar
+  annotations:
+    policies.kyverno.io/title: Require Logging Sidecar
+    policies.kyverno.io/category: Monitoring, Logging
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Ensures pods with specific labels have logging sidecar.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-logging-sidecar
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  requires-logging: "true"
+      validate:
+        message: "Pods requiring logging must have a fluent-bit sidecar."
+        pattern:
+          spec:
+            containers:
+              - name: "fluent-bit | fluentd | vector"
+
+---
+# Add logging labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-logging-labels
+  annotations:
+    policies.kyverno.io/title: Add Logging Labels
+    policies.kyverno.io/category: Monitoring, Logging
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds labels used by log aggregation systems for filtering.
+spec:
+  rules:
+    - name: add-log-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      context:
+        - name: ns_labels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.labels"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(logging.company.com/team): "{{ ns_labels.team || 'unknown' }}"
+              +(logging.company.com/environment): "{{ ns_labels.environment || 'unknown' }}"
+            annotations:
+              +(logging.company.com/parser): "json"
+
+---
+# Validate PodMonitor configurations  
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-podmonitor
+  annotations:
+    policies.kyverno.io/title: Validate PodMonitor
+    policies.kyverno.io/category: Monitoring, Prometheus
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PodMonitor
+    policies.kyverno.io/description: >-
+      Validates Prometheus PodMonitor configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-selector
+      match:
+        any:
+          - resources:
+              kinds:
+                - PodMonitor
+      validate:
+        message: "PodMonitor must specify a pod selector."
+        pattern:
+          spec:
+            selector:
+              matchLabels:
+                "?*": "?*"

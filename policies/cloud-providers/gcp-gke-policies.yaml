@@ -1,0 +1,236 @@
+# GCP/GKE Specific Policies
+# Policies tailored for Google Kubernetes Engine environments
+
+---
+# Require Workload Identity
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-workload-identity
+  annotations:
+    policies.kyverno.io/title: Require Workload Identity
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ServiceAccount
+    policies.kyverno.io/description: >-
+      Service accounts requiring GCP access should use Workload Identity
+      instead of service account keys.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-workload-identity-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceAccount
+              selector:
+                matchLabels:
+                  requires-gcp-access: "true"
+      validate:
+        message: "ServiceAccounts requiring GCP access must use Workload Identity."
+        pattern:
+          metadata:
+            annotations:
+              iam.gke.io/gcp-service-account: "?*@*.iam.gserviceaccount.com"
+
+---
+# Validate GCR/Artifact Registry images
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-gcr-images
+  annotations:
+    policies.kyverno.io/title: Require GCR/Artifact Registry Images
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires container images from approved GCP registries.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-gcp-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - gke-system
+                - kyverno
+      validate:
+        message: "Images must be from GCR or Artifact Registry."
+        pattern:
+          spec:
+            containers:
+              - image: "gcr.io/* | us-docker.pkg.dev/* | europe-docker.pkg.dev/* | asia-docker.pkg.dev/*"
+
+---
+# Add GKE node pool selector
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-gke-nodepool-selector
+  annotations:
+    policies.kyverno.io/title: Add GKE Node Pool Selector
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds node selector for GKE node pools based on workload type.
+spec:
+  rules:
+    - name: add-general-nodepool
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - gke-system
+              selector:
+                matchExpressions:
+                  - key: workload-type
+                    operator: Exists
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(nodeSelector):
+              cloud.google.com/gke-nodepool: "general"
+    - name: add-compute-nodepool
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  workload-type: compute
+      mutate:
+        patchStrategicMerge:
+          spec:
+            nodeSelector:
+              cloud.google.com/gke-nodepool: "high-cpu"
+
+---
+# Validate GKE Ingress annotations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-gke-ingress
+  annotations:
+    policies.kyverno.io/title: Validate GKE Ingress
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates GKE Ingress configurations for security and compliance.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-https-redirect
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              annotations:
+                kubernetes.io/ingress.class: gce
+      validate:
+        message: "GKE Ingress must enable HTTPS redirect."
+        pattern:
+          metadata:
+            annotations:
+              kubernetes.io/ingress.allow-http: "false"
+    - name: require-cloud-armor
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              namespaces:
+                - production
+                - prod
+      validate:
+        message: "Production Ingress should have Cloud Armor policy."
+        pattern:
+          metadata:
+            annotations:
+              cloud.google.com/backend-config: "?*"
+
+---
+# Require PD-SSD for production
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ssd-storage
+  annotations:
+    policies.kyverno.io/title: Require SSD Storage for Production
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PersistentVolumeClaim
+    policies.kyverno.io/description: >-
+      Production workloads should use SSD-backed storage.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-ssd
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+              namespaces:
+                - production
+                - prod
+      validate:
+        message: "Production PVCs must use SSD storage class."
+        pattern:
+          spec:
+            storageClassName: "premium-rwo | ssd | ?*-ssd"
+
+---
+# Add GCP labels for billing
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-gcp-billing-labels
+  annotations:
+    policies.kyverno.io/title: Add GCP Billing Labels
+    policies.kyverno.io/category: GCP, GKE Best Practices
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Adds labels used for GCP billing export and cost allocation.
+spec:
+  rules:
+    - name: add-billing-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-*
+                - gke-*
+                - default
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(billing/cost-center): "{{ request.object.metadata.labels.cost-center || 'unassigned' }}"
+              +(billing/project): "{{ request.object.metadata.labels.project || 'unassigned' }}"

@@ -1,0 +1,248 @@
+# Azure/AKS Specific Policies
+# Policies tailored for Azure Kubernetes Service environments
+
+---
+# Require Azure AD Pod Identity or Workload Identity
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-azure-identity
+  annotations:
+    policies.kyverno.io/title: Require Azure Workload Identity
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ServiceAccount
+    policies.kyverno.io/description: >-
+      Service accounts requiring Azure access should use Workload Identity
+      instead of service principal secrets.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-workload-identity
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceAccount
+              selector:
+                matchLabels:
+                  requires-azure-access: "true"
+      validate:
+        message: "ServiceAccounts requiring Azure access must use Workload Identity."
+        pattern:
+          metadata:
+            annotations:
+              azure.workload.identity/client-id: "?*"
+            labels:
+              azure.workload.identity/use: "true"
+
+---
+# Validate ACR images
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-acr-images
+  annotations:
+    policies.kyverno.io/title: Require ACR Images
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires container images from approved Azure Container Registry.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-acr
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+      validate:
+        message: "Images must be from approved ACR registries."
+        pattern:
+          spec:
+            containers:
+              - image: "*.azurecr.io/*"
+
+---
+# Add Azure node pool affinity
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-aks-nodepool-affinity
+  annotations:
+    policies.kyverno.io/title: Add AKS Node Pool Affinity
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds node affinity for AKS node pools based on workload requirements.
+spec:
+  rules:
+    - name: add-user-nodepool
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(nodeSelector):
+              agentpool: "userpool"
+
+---
+# Validate Azure Disk storage
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-azure-disk
+  annotations:
+    policies.kyverno.io/title: Validate Azure Disk Configuration
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PersistentVolumeClaim, StorageClass
+    policies.kyverno.io/description: >-
+      Validates Azure Disk configurations for performance and security.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-premium-ssd
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+              namespaces:
+                - production
+                - prod
+      validate:
+        message: "Production PVCs should use Premium SSD."
+        pattern:
+          spec:
+            storageClassName: "managed-premium | managed-csi-premium"
+    - name: require-disk-encryption
+      match:
+        any:
+          - resources:
+              kinds:
+                - StorageClass
+      preconditions:
+        all:
+          - key: "{{ request.object.provisioner }}"
+            operator: Equals
+            value: disk.csi.azure.com
+      validate:
+        message: "Azure Disk storage classes should enable encryption."
+        pattern:
+          parameters:
+            =(enableEncryption): "true"
+
+---
+# Validate Azure Application Gateway Ingress
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-agic-ingress
+  annotations:
+    policies.kyverno.io/title: Validate AGIC Ingress
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Validates Azure Application Gateway Ingress Controller configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-ssl-certificate
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              annotations:
+                kubernetes.io/ingress.class: azure/application-gateway
+      validate:
+        message: "AGIC Ingress must specify SSL certificate."
+        pattern:
+          metadata:
+            annotations:
+              appgw.ingress.kubernetes.io/ssl-redirect: "true"
+
+---
+# Add Azure resource tags
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-azure-tags
+  annotations:
+    policies.kyverno.io/title: Add Azure Resource Tags
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/subject: PersistentVolumeClaim
+    policies.kyverno.io/description: >-
+      Adds Azure resource tags for cost management and governance.
+spec:
+  rules:
+    - name: add-pvc-tags
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+      context:
+        - name: ns_labels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.labels"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(azure.com/tags): '{"Environment":"{{ ns_labels.environment || ''unknown'' }}","Team":"{{ ns_labels.team || ''unknown'' }}","ManagedBy":"kubernetes"}'
+
+---
+# Require Azure CNI for specific workloads
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-network-requirements
+  annotations:
+    policies.kyverno.io/title: Validate Network Requirements
+    policies.kyverno.io/category: Azure, AKS Best Practices
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Validates that pods requiring specific network features have correct configuration.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-host-network
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  requires-host-network: "true"
+      validate:
+        message: "Pods requiring host network must be in approved namespaces."
+        pattern:
+          metadata:
+            namespace: "kube-system | monitoring | ?*-system"

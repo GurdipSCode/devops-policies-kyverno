@@ -1,0 +1,180 @@
+# Mutation Policies - Add Default Labels
+# Automatically adds labels to resources
+
+---
+# Add team label if missing
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-default-labels
+  annotations:
+    policies.kyverno.io/title: Add Default Labels
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod, Label
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      Adds default labels to Pods if they are not already present.
+      The '+' anchor ensures the mutation only applies when the key is not found.
+spec:
+  rules:
+    - name: add-team-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(team): "default-team"
+
+---
+# Add environment label based on namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-environment-label
+  annotations:
+    policies.kyverno.io/title: Add Environment Label
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod, Label
+    policies.kyverno.io/description: >-
+      Automatically adds an environment label based on the namespace name.
+spec:
+  rules:
+    - name: add-env-label-production
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - production
+                - prod
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(environment): "production"
+    - name: add-env-label-staging
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - staging
+                - stage
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(environment): "staging"
+    - name: add-env-label-development
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - development
+                - dev
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(environment): "development"
+
+---
+# Add cost center annotation from namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-cost-center-annotation
+  annotations:
+    policies.kyverno.io/title: Add Cost Center Annotation
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Copies cost-center annotation from namespace to pods for billing purposes.
+spec:
+  rules:
+    - name: add-cost-center
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      context:
+        - name: nsAnnotations
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.annotations"
+      preconditions:
+        all:
+          - key: "{{ nsAnnotations.\"cost-center\" || '' }}"
+            operator: NotEquals
+            value: ""
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(cost-center): "{{ nsAnnotations.\"cost-center\" }}"
+
+---
+# Add managed-by label
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-managed-by-label
+  annotations:
+    policies.kyverno.io/title: Add Managed-By Label
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds app.kubernetes.io/managed-by label for tracking resource management.
+spec:
+  rules:
+    - name: add-managed-by
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(app.kubernetes.io/managed-by): "kyverno"
+
+---
+# Add creation timestamp annotation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-creation-timestamp
+  annotations:
+    policies.kyverno.io/title: Add Creation Timestamp
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds a human-readable creation timestamp annotation for easier auditing.
+spec:
+  rules:
+    - name: add-timestamp
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(created-at): "{{ time_now_utc() }}"
+              +(created-by): "{{ request.userInfo.username }}"

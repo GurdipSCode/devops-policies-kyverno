@@ -1,0 +1,252 @@
+# Audit and Events Policies
+# Policies for generating events and audit trails
+
+---
+# Generate event on policy violation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-violation-event
+  annotations:
+    policies.kyverno.io/title: Generate Violation Event
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Event
+    policies.kyverno.io/description: >-
+      Generates Kubernetes Events for policy violations to improve visibility.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: privileged-container-event
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        any:
+          - key: "{{ request.object.spec.containers[?securityContext.privileged == `true`] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      generate:
+        apiVersion: v1
+        kind: Event
+        name: "privileged-violation-{{request.uid}}"
+        namespace: "{{request.namespace}}"
+        synchronize: false
+        data:
+          type: Warning
+          reason: PolicyViolation
+          message: "Pod {{request.object.metadata.name}} contains privileged container"
+          involvedObject:
+            apiVersion: v1
+            kind: Pod
+            name: "{{request.object.metadata.name}}"
+            namespace: "{{request.namespace}}"
+          source:
+            component: kyverno
+
+---
+# Add audit annotations to sensitive operations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-audit-annotations
+  annotations:
+    policies.kyverno.io/title: Add Audit Annotations
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/subject: All
+    policies.kyverno.io/description: >-
+      Adds audit trail annotations to resources.
+spec:
+  rules:
+    - name: add-creation-audit
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+                - Service
+                - Ingress
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(audit.company.com/created-by): "{{ request.userInfo.username }}"
+              +(audit.company.com/created-at): "{{ time_now_utc() }}"
+              +(audit.company.com/request-id): "{{ request.uid }}"
+
+---
+# Track resource modifications
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: track-modifications
+  annotations:
+    policies.kyverno.io/title: Track Resource Modifications
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/subject: All
+    policies.kyverno.io/description: >-
+      Updates audit annotations on resource modifications.
+spec:
+  rules:
+    - name: track-update
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - Service
+              operations:
+                - UPDATE
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              audit.company.com/last-modified-by: "{{ request.userInfo.username }}"
+              audit.company.com/last-modified-at: "{{ time_now_utc() }}"
+
+---
+# Generate event for high-risk changes
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: alert-high-risk-changes
+  annotations:
+    policies.kyverno.io/title: Alert High Risk Changes
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/subject: Event
+    policies.kyverno.io/description: >-
+      Generates events for high-risk configuration changes.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: alert-clusterrole-change
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterRole
+                - ClusterRoleBinding
+      generate:
+        apiVersion: v1
+        kind: Event
+        name: "rbac-change-{{request.uid}}"
+        namespace: kube-system
+        synchronize: false
+        data:
+          type: Warning
+          reason: RBACChange
+          message: "Cluster RBAC resource {{request.object.kind}}/{{request.object.metadata.name}} was {{request.operation}} by {{request.userInfo.username}}"
+          involvedObject:
+            apiVersion: "{{request.object.apiVersion}}"
+            kind: "{{request.object.kind}}"
+            name: "{{request.object.metadata.name}}"
+          source:
+            component: kyverno
+
+---
+# Require change reason annotation for production
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-change-reason
+  annotations:
+    policies.kyverno.io/title: Require Change Reason
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Deployment
+    policies.kyverno.io/description: >-
+      Requires a change reason annotation for production deployments.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: require-reason
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaces:
+                - production
+                - prod
+              operations:
+                - UPDATE
+      validate:
+        message: "Production deployments require kubernetes.io/change-cause annotation."
+        pattern:
+          metadata:
+            annotations:
+              kubernetes.io/change-cause: "?*"
+
+---
+# Add deployment revision annotation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-revision-annotation
+  annotations:
+    policies.kyverno.io/title: Add Revision Annotation
+    policies.kyverno.io/category: Audit
+    policies.kyverno.io/subject: Deployment
+    policies.kyverno.io/description: >-
+      Adds revision tracking annotation to deployments.
+spec:
+  rules:
+    - name: add-revision
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+      mutate:
+        patchStrategicMerge:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  +(deployment.company.com/deployed-at): "{{ time_now_utc() }}"
+
+---
+# Generate compliance report annotation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-compliance-status
+  annotations:
+    policies.kyverno.io/title: Add Compliance Status
+    policies.kyverno.io/category: Audit, Compliance
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds compliance status annotations based on security checks.
+spec:
+  rules:
+    - name: add-compliance-annotations
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      context:
+        - name: is_privileged
+          variable:
+            jmesPath: "request.object.spec.containers[?securityContext.privileged == `true`] | length(@)"
+        - name: is_root
+          variable:
+            jmesPath: "request.object.spec.securityContext.runAsNonRoot || `false`"
+        - name: has_limits
+          variable:
+            jmesPath: "request.object.spec.containers[?resources.limits.memory && resources.limits.cpu] | length(@)"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(compliance.company.com/privileged-check): "{{ is_privileged == `0` && 'pass' || 'fail' }}"
+              +(compliance.company.com/nonroot-check): "{{ is_root && 'pass' || 'fail' }}"
+              +(compliance.company.com/evaluated-at): "{{ time_now_utc() }}"

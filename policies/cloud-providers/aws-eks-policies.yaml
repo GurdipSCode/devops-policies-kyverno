@@ -1,0 +1,252 @@
+# AWS/EKS Specific Policies
+# Policies tailored for Amazon EKS environments
+
+---
+# Require IAM roles for service accounts (IRSA)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-irsa
+  annotations:
+    policies.kyverno.io/title: Require IAM Roles for Service Accounts
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ServiceAccount
+    policies.kyverno.io/description: >-
+      Service accounts that need AWS access should use IRSA instead of
+      storing credentials in secrets.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-irsa-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - ServiceAccount
+              selector:
+                matchLabels:
+                  requires-aws-access: "true"
+      validate:
+        message: "ServiceAccounts requiring AWS access must use IRSA annotation."
+        pattern:
+          metadata:
+            annotations:
+              eks.amazonaws.com/role-arn: "arn:aws:iam::*:role/*"
+
+---
+# Validate EBS volume types
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-ebs-volume-type
+  annotations:
+    policies.kyverno.io/title: Validate EBS Volume Type
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: PersistentVolumeClaim
+    policies.kyverno.io/description: >-
+      Ensures PVCs use appropriate EBS volume types (gp3 recommended).
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-gp3
+      match:
+        any:
+          - resources:
+              kinds:
+                - PersistentVolumeClaim
+      validate:
+        message: "PVCs should use gp3 storage class for better performance and cost."
+        pattern:
+          spec:
+            storageClassName: "gp3 | gp3-encrypted | ?*"
+
+---
+# Add EKS Fargate compatibility labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-fargate-labels
+  annotations:
+    policies.kyverno.io/title: Add Fargate Labels
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds labels required for Fargate profile matching.
+spec:
+  rules:
+    - name: add-fargate-profile-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - fargate-*
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(eks.amazonaws.com/fargate-profile): "default"
+
+---
+# Restrict AWS Load Balancer Controller annotations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-alb-annotations
+  annotations:
+    policies.kyverno.io/title: Validate ALB Annotations
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress, Service
+    policies.kyverno.io/description: >-
+      Validates AWS Load Balancer Controller annotations for security.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-internal-alb
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              annotations:
+                kubernetes.io/ingress.class: alb
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - public-*
+      validate:
+        message: "ALB Ingress must be internal unless in public namespace."
+        pattern:
+          metadata:
+            annotations:
+              alb.ingress.kubernetes.io/scheme: "internal"
+    - name: require-ssl-redirect
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+              annotations:
+                kubernetes.io/ingress.class: alb
+      validate:
+        message: "ALB must enforce SSL redirect."
+        pattern:
+          metadata:
+            annotations:
+              alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+---
+# Validate ECR image sources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ecr-images
+  annotations:
+    policies.kyverno.io/title: Require ECR Images
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires container images to come from approved ECR registries.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-ecr
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+      validate:
+        message: "Images must be from approved ECR registries."
+        pattern:
+          spec:
+            containers:
+              - image: "*.dkr.ecr.*.amazonaws.com/* | public.ecr.aws/*"
+
+---
+# Add AWS resource tags via annotations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-aws-resource-tags
+  annotations:
+    policies.kyverno.io/title: Add AWS Resource Tags
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/subject: Service, PersistentVolumeClaim
+    policies.kyverno.io/description: >-
+      Adds AWS resource tagging annotations for cost allocation.
+spec:
+  rules:
+    - name: add-cost-tags-to-loadbalancer
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.type }}"
+            operator: Equals
+            value: LoadBalancer
+      context:
+        - name: ns_labels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.labels"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags): "Environment={{ ns_labels.environment || 'unknown' }},Team={{ ns_labels.team || 'unknown' }},ManagedBy=kubernetes"
+
+---
+# Restrict EBS encryption
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ebs-encryption
+  annotations:
+    policies.kyverno.io/title: Require EBS Encryption
+    policies.kyverno.io/category: AWS, EKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: StorageClass
+    policies.kyverno.io/description: >-
+      Ensures EBS-backed storage classes have encryption enabled.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-encryption
+      match:
+        any:
+          - resources:
+              kinds:
+                - StorageClass
+      preconditions:
+        all:
+          - key: "{{ request.object.provisioner }}"
+            operator: AnyIn
+            value:
+              - ebs.csi.aws.com
+              - kubernetes.io/aws-ebs
+      validate:
+        message: "EBS storage classes must have encryption enabled."
+        pattern:
+          parameters:
+            encrypted: "true"

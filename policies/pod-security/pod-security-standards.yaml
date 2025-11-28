@@ -1,0 +1,295 @@
+# Pod Security Standards Policies
+# Implements Kubernetes Pod Security Standards (PSS)
+
+---
+# Baseline Pod Security Standards (single rule - recommended)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: podsecurity-subrule-baseline
+  annotations:
+    policies.kyverno.io/title: Baseline Pod Security Standards
+    policies.kyverno.io/category: Pod Security, EKS Best Practices
+    policies.kyverno.io/severity: high
+    kyverno.io/kyverno-version: 1.8.0
+    policies.kyverno.io/minversion: 1.8.0
+    kyverno.io/kubernetes-version: "1.24"
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      The baseline profile of the Pod Security Standards is a collection of the
+      most basic and important steps that can be taken to secure Pods. Beginning
+      with Kyverno 1.8, an entire profile may be assigned to the cluster through
+      a single rule. This policy configures the baseline profile through the
+      latest version of the Pod Security Standards cluster wide.
+spec:
+  background: true
+  validationFailureAction: Audit
+  rules:
+    - name: baseline
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        podSecurity:
+          level: baseline
+          version: latest
+
+---
+# Restricted Pod Security Standards (single rule - recommended for production)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: podsecurity-subrule-restricted
+  annotations:
+    policies.kyverno.io/title: Restricted Pod Security Standards
+    policies.kyverno.io/category: Pod Security, EKS Best Practices
+    policies.kyverno.io/severity: medium
+    kyverno.io/kyverno-version: 1.8.0
+    policies.kyverno.io/minversion: 1.8.0
+    kyverno.io/kubernetes-version: "1.24"
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      The restricted profile of the Pod Security Standards, which is inclusive
+      of the baseline profile, is a collection of all the most common
+      configurations that can be taken to secure Pods. This policy configures
+      the restricted profile through the latest version of the Pod Security
+      Standards cluster wide.
+spec:
+  background: true
+  validationFailureAction: Audit
+  rules:
+    - name: restricted
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        podSecurity:
+          level: restricted
+          version: latest
+
+---
+# Restricted with exemptions for specific controls
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: podsecurity-restricted-with-exemptions
+  annotations:
+    policies.kyverno.io/title: Restricted PSS with Exemptions
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Restricted profile with exemptions for specific images that need
+      elevated capabilities (e.g., nginx needs NET_BIND_SERVICE).
+spec:
+  background: true
+  validationFailureAction: Audit
+  rules:
+    - name: restricted-exempt-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        podSecurity:
+          level: restricted
+          version: latest
+          exclude:
+            - controlName: Capabilities
+              images:
+                - nginx*
+                - redis*
+            - controlName: Running as Non-root user
+              images:
+                - nginx*
+
+---
+# Disallow capabilities (individual policy)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-capabilities
+  annotations:
+    policies.kyverno.io/title: Disallow Capabilities
+    policies.kyverno.io/category: Pod Security Standards (Baseline)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    kyverno.io/kubernetes-version: "1.22-1.23"
+    kyverno.io/kyverno-version: 1.6.0
+    policies.kyverno.io/description: >-
+      Adding capabilities beyond those listed in the policy must be disallowed.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: adding-capabilities
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Any capabilities added beyond the allowed list (AUDIT_WRITE, CHOWN,
+          DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD, NET_BIND_SERVICE, SETFCAP,
+          SETGID, SETPCAP, SETUID, SYS_CHROOT) are disallowed.
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - =(securityContext):
+                  =(capabilities):
+                    =(add): "AUDIT_WRITE | CHOWN | DAC_OVERRIDE | FOWNER | FSETID | KILL | MKNOD | NET_BIND_SERVICE | SETFCAP | SETGID | SETPCAP | SETUID | SYS_CHROOT"
+            =(initContainers):
+              - =(securityContext):
+                  =(capabilities):
+                    =(add): "AUDIT_WRITE | CHOWN | DAC_OVERRIDE | FOWNER | FSETID | KILL | MKNOD | NET_BIND_SERVICE | SETFCAP | SETGID | SETPCAP | SETUID | SYS_CHROOT"
+            containers:
+              - =(securityContext):
+                  =(capabilities):
+                    =(add): "AUDIT_WRITE | CHOWN | DAC_OVERRIDE | FOWNER | FSETID | KILL | MKNOD | NET_BIND_SERVICE | SETFCAP | SETGID | SETPCAP | SETUID | SYS_CHROOT"
+
+---
+# Require drop all capabilities (restricted profile)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-drop-all-capabilities
+  annotations:
+    policies.kyverno.io/title: Require Drop All Capabilities
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Containers must drop ALL capabilities and may only add back
+      NET_BIND_SERVICE.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-drop-all
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Containers must drop ALL capabilities and may only add back
+          NET_BIND_SERVICE.
+        pattern:
+          spec:
+            =(ephemeralContainers):
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+                    =(add):
+                      - NET_BIND_SERVICE
+            =(initContainers):
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+                    =(add):
+                      - NET_BIND_SERVICE
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+                    =(add):
+                      - NET_BIND_SERVICE
+
+---
+# Restrict volume types (restricted profile)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-volume-types
+  annotations:
+    policies.kyverno.io/title: Restrict Volume Types
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod, Volume
+    policies.kyverno.io/minversion: 1.6.0
+    kyverno.io/kubernetes-version: "1.22-1.23"
+    kyverno.io/kyverno-version: 1.6.0
+    policies.kyverno.io/description: >-
+      In addition to restricting HostPath volumes, the restricted pod security
+      profile limits usage of non-core volume types to those defined through
+      PersistentVolumes. This policy blocks any other type of volume other
+      than those in the allow list.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: restricted-volumes
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Only the following volume types are allowed: configMap, csi,
+          downwardAPI, emptyDir, ephemeral, persistentVolumeClaim, projected,
+          and secret.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.volumes[].keys(@)[] || '' }}"
+                operator: AnyNotIn
+                value:
+                  - name
+                  - configMap
+                  - csi
+                  - downwardAPI
+                  - emptyDir
+                  - ephemeral
+                  - persistentVolumeClaim
+                  - projected
+                  - secret
+                  - ''
+
+---
+# Require seccomp profile
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-seccomp
+  annotations:
+    policies.kyverno.io/title: Require Seccomp
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      The seccomp profile must be set to RuntimeDefault or Localhost.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-seccomp
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Pods must have a seccomp profile of RuntimeDefault or Localhost.
+        anyPattern:
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: RuntimeDefault | Localhost
+          - spec:
+              containers:
+                - securityContext:
+                    seccompProfile:
+                      type: RuntimeDefault | Localhost

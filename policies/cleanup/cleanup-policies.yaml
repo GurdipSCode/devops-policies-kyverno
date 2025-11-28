@@ -1,0 +1,273 @@
+# Cleanup Policies
+# Policies for automatic resource cleanup and lifecycle management
+
+---
+# Cleanup completed Jobs
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-ttl-to-jobs
+  annotations:
+    policies.kyverno.io/title: Add TTL to Jobs
+    policies.kyverno.io/category: Cleanup, Best Practices
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Job
+    policies.kyverno.io/description: >-
+      Automatically adds TTL to Jobs for automatic cleanup after completion.
+spec:
+  rules:
+    - name: add-ttl-seconds
+      match:
+        any:
+          - resources:
+              kinds:
+                - Job
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(ttlSecondsAfterFinished): 86400  # 24 hours
+
+---
+# Cleanup old ConfigMaps
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-old-configmaps
+  annotations:
+    policies.kyverno.io/title: Cleanup Old ConfigMaps
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up ConfigMaps with cleanup-after label that are older than specified time.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - ConfigMap
+          selector:
+            matchLabels:
+              cleanup-enabled: "true"
+  conditions:
+    any:
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "168h"  # 7 days
+  schedule: "0 */6 * * *"  # Every 6 hours
+
+---
+# Cleanup orphaned PVCs
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-orphaned-pvcs
+  annotations:
+    policies.kyverno.io/title: Cleanup Orphaned PVCs
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up unbound PVCs that have been pending for too long.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - PersistentVolumeClaim
+          selector:
+            matchLabels:
+              auto-cleanup: "true"
+  conditions:
+    all:
+      - key: "{{ target.status.phase }}"
+        operator: Equals
+        value: "Pending"
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "72h"  # 3 days
+  schedule: "0 0 * * *"  # Daily at midnight
+
+---
+# Cleanup failed pods
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-failed-pods
+  annotations:
+    policies.kyverno.io/title: Cleanup Failed Pods
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up pods in Failed state that are older than 24 hours.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+  exclude:
+    any:
+      - resources:
+          namespaces:
+            - kube-system
+  conditions:
+    all:
+      - key: "{{ target.status.phase }}"
+        operator: Equals
+        value: "Failed"
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "24h"
+  schedule: "0 */4 * * *"  # Every 4 hours
+
+---
+# Cleanup evicted pods
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-evicted-pods
+  annotations:
+    policies.kyverno.io/title: Cleanup Evicted Pods
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up evicted pods immediately.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+  conditions:
+    any:
+      - key: "{{ target.status.reason }}"
+        operator: Equals
+        value: "Evicted"
+  schedule: "*/30 * * * *"  # Every 30 minutes
+
+---
+# Cleanup completed pods
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-completed-pods
+  annotations:
+    policies.kyverno.io/title: Cleanup Completed Pods
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up completed (Succeeded) pods older than 1 hour.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - Pod
+  exclude:
+    any:
+      - resources:
+          namespaces:
+            - kube-system
+  conditions:
+    all:
+      - key: "{{ target.status.phase }}"
+        operator: Equals
+        value: "Succeeded"
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "1h"
+  schedule: "0 * * * *"  # Every hour
+
+---
+# Cleanup old secrets with expiry
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-expired-secrets
+  annotations:
+    policies.kyverno.io/title: Cleanup Expired Secrets
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up secrets marked with expiry annotation.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - Secret
+          selector:
+            matchExpressions:
+              - key: auto-expire
+                operator: Exists
+  conditions:
+    all:
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "{{ target.metadata.annotations.\"expire-after\" || '720h' }}"  # Default 30 days
+  schedule: "0 0 * * *"  # Daily
+
+---
+# Add cleanup labels to temporary resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-cleanup-labels
+  annotations:
+    policies.kyverno.io/title: Add Cleanup Labels
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/subject: Pod, Job
+    policies.kyverno.io/description: >-
+      Adds cleanup labels to temporary resources.
+spec:
+  rules:
+    - name: add-cleanup-to-jobs
+      match:
+        any:
+          - resources:
+              kinds:
+                - Job
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(cleanup-enabled): "true"
+    - name: add-cleanup-to-debug-pods
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  purpose: debug
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(auto-cleanup): "true"
+            annotations:
+              +(expire-after): "4h"
+
+---
+# Cleanup old ReplicaSets
+apiVersion: kyverno.io/v2beta1
+kind: ClusterCleanupPolicy
+metadata:
+  name: cleanup-old-replicasets
+  annotations:
+    policies.kyverno.io/title: Cleanup Old ReplicaSets
+    policies.kyverno.io/category: Cleanup
+    policies.kyverno.io/description: >-
+      Cleans up old ReplicaSets with 0 replicas.
+spec:
+  match:
+    any:
+      - resources:
+          kinds:
+            - ReplicaSet
+  conditions:
+    all:
+      - key: "{{ target.spec.replicas }}"
+        operator: Equals
+        value: 0
+      - key: "{{ target.status.replicas || 0 }}"
+        operator: Equals
+        value: 0
+      - key: "{{ time_since('', '{{target.metadata.creationTimestamp}}', '') }}"
+        operator: GreaterThan
+        value: "168h"  # 7 days
+  schedule: "0 2 * * *"  # Daily at 2 AM

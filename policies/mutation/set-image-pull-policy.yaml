@@ -1,0 +1,154 @@
+# Mutation Policies - Set Image Pull Policy
+# Automatically sets image pull policies based on tags
+
+---
+# Set imagePullPolicy to Always for latest tag
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: set-image-pull-policy
+  annotations:
+    policies.kyverno.io/title: Set Image Pull Policy
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      The default imagePullPolicy for containers with ':latest' tag or no tag
+      specified is 'Always'. For production, images with specific tags should
+      use 'IfNotPresent' to avoid unnecessary pulls. This policy sets the
+      imagePullPolicy for images based on their tags.
+spec:
+  rules:
+    - name: set-image-pull-policy-latest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              # For images with :latest tag, always pull
+              - (image): "*:latest"
+                imagePullPolicy: "Always"
+    - name: set-image-pull-policy-tagged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              # For images with specific tags (not latest), use IfNotPresent
+              - (image): "*:?*"
+                (image): "!*:latest"
+                +(imagePullPolicy): "IfNotPresent"
+
+---
+# Always pull from private registries
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: always-pull-private-registry
+  annotations:
+    policies.kyverno.io/title: Always Pull from Private Registry
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Forces images from private registries to always be pulled to ensure
+      the latest signed images are used.
+spec:
+  rules:
+    - name: always-pull-private
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (image): "registry.internal.company.com/*"
+                imagePullPolicy: "Always"
+
+---
+# Add default image pull secrets
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-imagepullsecrets
+  annotations:
+    policies.kyverno.io/title: Add Image Pull Secrets
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds default image pull secrets to pods that use private registry images.
+spec:
+  rules:
+    - name: add-pull-secret-private-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        any:
+          - key: "{{ request.object.spec.containers[*].image }}"
+            operator: AnyIn
+            value:
+              - "registry.internal.company.com/*"
+              - "gcr.io/my-project/*"
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(imagePullSecrets):
+              - name: registry-credentials
+
+---
+# Replace image registry (useful for air-gapped environments)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: replace-image-registry
+  annotations:
+    policies.kyverno.io/title: Replace Image Registry
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Replaces public registry references with internal mirror registry.
+      Useful for air-gapped or restricted environments.
+spec:
+  rules:
+    - name: replace-dockerhub
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        foreach:
+          - list: "request.object.spec.containers"
+            patchStrategicMerge:
+              spec:
+                containers:
+                  - name: "{{ element.name }}"
+                    image: "{{ regex_replace_all('^docker\\.io/', '{{element.image}}', 'mirror.internal.company.com/docker.io/') }}"
+    - name: replace-gcr
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        foreach:
+          - list: "request.object.spec.containers"
+            patchStrategicMerge:
+              spec:
+                containers:
+                  - name: "{{ element.name }}"
+                    image: "{{ regex_replace_all('^gcr\\.io/', '{{element.image}}', 'mirror.internal.company.com/gcr.io/') }}"

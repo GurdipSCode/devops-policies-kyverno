@@ -1,0 +1,293 @@
+# Multi-Tenancy Policies
+# Policies for namespace isolation and multi-tenant environments
+
+---
+# Enforce namespace labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ns-labels
+  annotations:
+    policies.kyverno.io/title: Require Namespace Labels
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Namespaces must have team and environment labels for proper
+      organization and access control.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-team-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-*
+                - default
+                - kyverno
+      validate:
+        message: "Namespaces must have 'team' and 'environment' labels."
+        pattern:
+          metadata:
+            labels:
+              team: "?*"
+              environment: "?*"
+
+---
+# Restrict cross-namespace resource references
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-cross-namespace-refs
+  annotations:
+    policies.kyverno.io/title: Restrict Cross-Namespace References
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Ingress
+    policies.kyverno.io/description: >-
+      Prevents Ingress resources from referencing services in other namespaces.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: restrict-ingress-backend
+      match:
+        any:
+          - resources:
+              kinds:
+                - Ingress
+      validate:
+        message: "Ingress backend services must be in the same namespace."
+        pattern:
+          spec:
+            rules:
+              - http:
+                  paths:
+                    - backend:
+                        service:
+                          =(namespace): "{{request.namespace}}"
+
+---
+# Enforce resource naming conventions per namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-naming-convention
+  annotations:
+    policies.kyverno.io/title: Enforce Naming Convention
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod, Deployment
+    policies.kyverno.io/description: >-
+      Resource names should follow team naming conventions.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: naming-convention
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - Service
+                - ConfigMap
+      context:
+        - name: ns_team
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.labels.team || 'unknown'"
+      validate:
+        message: "Resource names should be prefixed with team name: {{ ns_team }}-"
+        pattern:
+          metadata:
+            name: "{{ ns_team }}-*"
+
+---
+# Limit services per namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: limit-services-per-namespace
+  annotations:
+    policies.kyverno.io/title: Limit Services Per Namespace
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Service
+    policies.kyverno.io/description: >-
+      Limits the number of LoadBalancer services per namespace to prevent
+      resource exhaustion.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: limit-loadbalancers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.type }}"
+            operator: Equals
+            value: LoadBalancer
+          - key: "{{ request.operation || 'BACKGROUND' }}"
+            operator: Equals
+            value: CREATE
+      context:
+        - name: lb_count
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}/services"
+            jmesPath: "items[?spec.type == 'LoadBalancer'] | length(@)"
+      validate:
+        message: "Maximum 3 LoadBalancer services per namespace. Current count: {{ lb_count }}"
+        deny:
+          conditions:
+            any:
+              - key: "{{ lb_count }}"
+                operator: GreaterThanOrEquals
+                value: 3
+
+---
+# Prevent namespace deletion for protected namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-namespaces
+  annotations:
+    policies.kyverno.io/title: Protect Namespaces
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Prevents deletion of protected namespaces marked with a specific label.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: protect-ns-deletion
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  protected: "true"
+              operations:
+                - DELETE
+      validate:
+        message: "Protected namespaces cannot be deleted."
+        deny: {}
+
+---
+# Enforce tenant isolation in pod specs
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-tenant-isolation
+  annotations:
+    policies.kyverno.io/title: Enforce Tenant Isolation
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Ensures pods can only reference resources within their own namespace.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: restrict-configmap-refs
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Pods can only reference ConfigMaps in their own namespace."
+        pattern:
+          spec:
+            containers:
+              - =(envFrom):
+                  - =(configMapRef):
+                      =(namespace): "{{request.namespace}} | null"
+              - =(env):
+                  - =(valueFrom):
+                      =(configMapKeyRef):
+                        =(namespace): "{{request.namespace}} | null"
+
+---
+# Require specific node pool for production
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-production-nodepool
+  annotations:
+    policies.kyverno.io/title: Require Production Node Pool
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Production pods must be scheduled on production node pools.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-prod-nodepool
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - production
+                - prod
+      validate:
+        message: "Production pods must run on production node pools."
+        pattern:
+          spec:
+            nodeSelector:
+              node-pool: "production"
+
+---
+# Add tenant labels to all resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-tenant-labels
+  annotations:
+    policies.kyverno.io/title: Add Tenant Labels
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Automatically adds tenant identification labels to all resources.
+spec:
+  rules:
+    - name: add-tenant-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+                - Service
+                - ConfigMap
+                - Secret
+      context:
+        - name: ns_labels
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{request.namespace}}"
+            jmesPath: "metadata.labels"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(tenant): "{{ ns_labels.tenant || ns_labels.team || 'unknown' }}"
+              +(namespace): "{{request.namespace}}"

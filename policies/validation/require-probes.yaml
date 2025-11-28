@@ -1,0 +1,103 @@
+# Require Probes Policy
+# Ensures containers have liveness and readiness probes configured
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-probes
+  annotations:
+    policies.kyverno.io/title: Require Pod Probes
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      Liveness and readiness probes need to be configured to correctly manage a Pod's
+      lifecycle during deployments, restarts, and upgrades. For each Pod, this policy
+      ensures that liveness and readiness probes are configured.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-livenessProbe-readinessProbe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Liveness and readiness probes are required."
+        pattern:
+          spec:
+            containers:
+              - livenessProbe:
+                  periodSeconds: ">0"
+                readinessProbe:
+                  periodSeconds: ">0"
+
+---
+# Alternative: Require at least readiness probe
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-readiness-probe
+  annotations:
+    policies.kyverno.io/title: Require Readiness Probe
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Readiness probes are essential for proper traffic routing in Kubernetes.
+      This policy requires all containers to have a readiness probe.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-readinessProbe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Readiness probe is required for all containers."
+        pattern:
+          spec:
+            containers:
+              - readinessProbe:
+                  periodSeconds: ">0"
+
+---
+# Require startup probe for slow-starting applications
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-startup-probe
+  annotations:
+    policies.kyverno.io/title: Require Startup Probe
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Startup probes protect slow-starting containers from being killed before
+      they are up and running. This policy requires startup probes on containers
+      with a specific label.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-startupProbe
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  requires-startup-probe: "true"
+      validate:
+        message: "Startup probe is required for slow-starting applications."
+        pattern:
+          spec:
+            containers:
+              - startupProbe:
+                  periodSeconds: ">0"

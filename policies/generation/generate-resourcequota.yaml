@@ -1,0 +1,249 @@
+# Generation Policies - ResourceQuota and LimitRange
+# Automatically generates resource constraints for namespaces
+
+---
+# Generate ResourceQuota and LimitRange for new namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-ns-quota
+  annotations:
+    policies.kyverno.io/title: Add Namespace Quota
+    policies.kyverno.io/category: Multi-Tenancy, EKS Best Practices
+    policies.kyverno.io/subject: ResourceQuota, LimitRange
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      To better control the number of resources that can be created in a given
+      Namespace and provide default resource consumption limits for Pods,
+      ResourceQuota and LimitRange resources are recommended.
+      This policy will generate ResourceQuota and LimitRange resources when
+      a new Namespace is created.
+spec:
+  rules:
+    - name: generate-resourcequota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - default
+                - kyverno
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: default-resourcequota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            hard:
+              requests.cpu: "4"
+              requests.memory: 8Gi
+              limits.cpu: "8"
+              limits.memory: 16Gi
+              persistentvolumeclaims: "10"
+              pods: "20"
+              services: "10"
+              secrets: "20"
+              configmaps: "20"
+
+    - name: generate-limitrange
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - default
+                - kyverno
+      generate:
+        apiVersion: v1
+        kind: LimitRange
+        name: default-limitrange
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            limits:
+              - type: Container
+                default:
+                  cpu: "500m"
+                  memory: "512Mi"
+                defaultRequest:
+                  cpu: "100m"
+                  memory: "128Mi"
+                max:
+                  cpu: "2"
+                  memory: "4Gi"
+                min:
+                  cpu: "50m"
+                  memory: "64Mi"
+              - type: PersistentVolumeClaim
+                max:
+                  storage: "10Gi"
+                min:
+                  storage: "1Gi"
+
+---
+# Generate different quotas based on namespace tier
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-tiered-quota
+  annotations:
+    policies.kyverno.io/title: Add Tiered Namespace Quota
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/subject: ResourceQuota
+    policies.kyverno.io/description: >-
+      Generates different ResourceQuota based on namespace tier label.
+spec:
+  rules:
+    - name: generate-production-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  tier: production
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: production-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+              tier: production
+          spec:
+            hard:
+              requests.cpu: "16"
+              requests.memory: 32Gi
+              limits.cpu: "32"
+              limits.memory: 64Gi
+              pods: "100"
+
+    - name: generate-staging-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  tier: staging
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: staging-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+              tier: staging
+          spec:
+            hard:
+              requests.cpu: "8"
+              requests.memory: 16Gi
+              limits.cpu: "16"
+              limits.memory: 32Gi
+              pods: "50"
+
+    - name: generate-development-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  tier: development
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: development-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+              tier: development
+          spec:
+            hard:
+              requests.cpu: "4"
+              requests.memory: 8Gi
+              limits.cpu: "8"
+              limits.memory: 16Gi
+              pods: "20"
+
+---
+# Generate object count quota
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-object-count-quota
+  annotations:
+    policies.kyverno.io/title: Add Object Count Quota
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/subject: ResourceQuota
+    policies.kyverno.io/description: >-
+      Generates ResourceQuota to limit the number of objects in a namespace.
+spec:
+  rules:
+    - name: generate-object-quota
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-*
+                - default
+                - kyverno
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: object-count-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            hard:
+              count/deployments.apps: "20"
+              count/replicasets.apps: "40"
+              count/services: "20"
+              count/configmaps: "50"
+              count/secrets: "50"
+              count/jobs.batch: "10"
+              count/cronjobs.batch: "5"

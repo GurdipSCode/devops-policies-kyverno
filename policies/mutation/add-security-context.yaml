@@ -1,0 +1,190 @@
+# Mutation Policies - Security Context Defaults
+# Automatically adds security-hardened defaults
+
+---
+# Add security context defaults
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-security-context-defaults
+  annotations:
+    policies.kyverno.io/title: Add Security Context Defaults
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds secure defaults to pod and container security contexts.
+      Implements defense in depth by setting secure defaults.
+spec:
+  rules:
+    - name: add-pod-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            securityContext:
+              +(runAsNonRoot): true
+              +(seccompProfile):
+                type: RuntimeDefault
+    - name: add-container-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                securityContext:
+                  +(allowPrivilegeEscalation): false
+                  +(readOnlyRootFilesystem): true
+                  +(capabilities):
+                    drop:
+                      - ALL
+
+---
+# Set specific runAsUser if not defined
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: set-run-as-user
+  annotations:
+    policies.kyverno.io/title: Set Run As User
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Sets a specific non-root user ID if not already specified.
+spec:
+  rules:
+    - name: set-run-as-user
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            securityContext:
+              +(runAsUser): 1000
+              +(runAsGroup): 1000
+              +(fsGroup): 1000
+
+---
+# Add seccomp profile
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-seccomp-profile
+  annotations:
+    policies.kyverno.io/title: Add Seccomp Profile
+    policies.kyverno.io/category: Pod Security Standards (Restricted)
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds RuntimeDefault seccomp profile to containers for enhanced security.
+spec:
+  rules:
+    - name: add-seccomp-runtime-default
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            securityContext:
+              +(seccompProfile):
+                type: RuntimeDefault
+
+---
+# Disable service account token automount
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disable-sa-token-automount
+  annotations:
+    policies.kyverno.io/title: Disable Service Account Token Automount
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Disables automatic mounting of service account tokens for enhanced security.
+spec:
+  rules:
+    - name: disable-automount
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(automountServiceAccountToken): false
+
+---
+# Add network policy annotation for isolation
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-network-isolation-annotation
+  annotations:
+    policies.kyverno.io/title: Add Network Isolation Annotation
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds an annotation indicating network policy requirements.
+spec:
+  rules:
+    - name: add-network-policy-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(network-policy.kyverno.io/required): "true"
+
+---
+# Add DNS policy for security
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: set-dns-policy
+  annotations:
+    policies.kyverno.io/title: Set DNS Policy
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Sets default DNS policy to ClusterFirst with DNS config.
+spec:
+  rules:
+    - name: set-dns-policy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(dnsPolicy): ClusterFirst
+            +(dnsConfig):
+              options:
+                - name: ndots
+                  value: "2"
+                - name: edns0

@@ -1,0 +1,153 @@
+# Require Resource Requests and Limits Policy
+# Ensures containers have resource requests and limits defined
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-requests-limits
+  annotations:
+    policies.kyverno.io/title: Require Limits and Requests
+    policies.kyverno.io/category: Best Practices, EKS Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      As application workloads share cluster resources, it is important to limit
+      resources requested and consumed by each Pod. It is recommended to require
+      resource requests and limits per Pod, especially for memory and CPU. If a
+      Namespace level request or limit is specified, defaults will automatically
+      be applied to each Pod based on the LimitRange configuration.
+      This policy validates that all containers have something specified for
+      memory and CPU requests and memory limits.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "CPU and memory resource requests and limits are required."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    memory: "?*"
+                    cpu: "?*"
+                  limits:
+                    memory: "?*"
+
+---
+# Require CPU limits as well
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-cpu-limits
+  annotations:
+    policies.kyverno.io/title: Require CPU Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      CPU limits should be defined to prevent resource starvation.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-cpu-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "CPU limits are required for all containers."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  limits:
+                    cpu: "?*"
+
+---
+# Check resource limits don't exceed maximum values
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: limit-resources-maximum
+  annotations:
+    policies.kyverno.io/title: Limit Resources Maximum
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Prevents containers from requesting excessive resources by setting maximum
+      limits. Adjust values based on your cluster capacity.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-max-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Container resource limits exceed maximum allowed values (CPU: 4, Memory: 8Gi)."
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.containers[*].resources.limits.cpu | sum(@) }}"
+                operator: GreaterThan
+                value: "4000m"
+              - key: "{{ request.object.spec.containers[*].resources.limits.memory | sum(@) }}"
+                operator: GreaterThan
+                value: "8Gi"
+
+---
+# Enforce resources ratio (limits shouldn't be much higher than requests)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-resources-as-ratio
+  annotations:
+    policies.kyverno.io/title: Enforce Resources as Ratio
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      Resource requests often need to be tailored to the type of workload.
+      This policy checks every container in a Pod and ensures that memory
+      limits are no more than 2.5x its requests.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: check-memory-requests-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        any:
+          - key: "{{ request.operation || 'BACKGROUND' }}"
+            operator: AnyIn
+            value:
+              - CREATE
+              - UPDATE
+      validate:
+        message: "Memory limits cannot be more than 2.5x the memory requests."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ divide('{{ element.resources.limits.memory || '0' }}', '{{ element.resources.requests.memory || '1m' }}') }}"
+                    operator: GreaterThan
+                    value: 2.5

@@ -1,0 +1,135 @@
+# Restrict Image Registries Policy
+# Ensures containers only use images from approved registries
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict Image Registries
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      Images from unknown registries may not be scanned and secured, posing
+      security risks. This policy restricts container images to only those
+      from approved registries.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Images must be from approved registries. Allowed registries are:
+          gcr.io, docker.io/library, ghcr.io, and your private registry.
+        pattern:
+          spec:
+            containers:
+              - image: "gcr.io/* | docker.io/library/* | ghcr.io/* | registry.internal.company.com/*"
+            =(initContainers):
+              - image: "gcr.io/* | docker.io/library/* | ghcr.io/* | registry.internal.company.com/*"
+
+---
+# Block specific registries (blocklist approach)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: block-untrusted-registries
+  annotations:
+    policies.kyverno.io/title: Block Untrusted Registries
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Blocks images from known untrusted or deprecated registries.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: block-bad-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Images from untrusted registries are not allowed."
+        pattern:
+          spec:
+            containers:
+              - image: "!quay.io/* & !docker.io/* & !k8s.gcr.io/*"
+
+---
+# Require fully qualified image names (no short names)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-fqin
+  annotations:
+    policies.kyverno.io/title: Require Fully Qualified Image Names
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires all images to use fully qualified names including the registry.
+      Short names like 'nginx' are ambiguous and should be avoided.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-fqin
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: >-
+          Images must use fully qualified names (e.g., docker.io/library/nginx:1.21).
+          Short names without a registry are not allowed.
+        pattern:
+          spec:
+            containers:
+              - image: "*/*"
+            =(initContainers):
+              - image: "*/*"
+
+---
+# Require image digest instead of tag
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    policies.kyverno.io/title: Require Image Digest
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Image tags are mutable and can be changed. Using image digests ensures
+      the exact image is used. This policy requires images to be specified
+      by digest.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-digest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Images must be specified by digest (sha256)."
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+            =(initContainers):
+              - image: "*@sha256:*"

@@ -1,0 +1,290 @@
+# ArgoCD and GitOps Policies
+# Policies for GitOps workflow governance
+
+---
+# Validate ArgoCD Application sources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-argocd-app-source
+  annotations:
+    policies.kyverno.io/title: Validate ArgoCD Application Source
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Application
+    policies.kyverno.io/description: >-
+      Ensures ArgoCD Applications only reference approved Git repositories.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: validate-git-source
+      match:
+        any:
+          - resources:
+              kinds:
+                - Application
+              namespaces:
+                - argocd
+      validate:
+        message: "ArgoCD Applications must use approved Git repositories."
+        pattern:
+          spec:
+            source:
+              repoURL: "https://github.com/myorg/* | git@github.com:myorg/* | https://gitlab.com/myorg/*"
+
+---
+# Require ArgoCD sync policy
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-argocd-sync-policy
+  annotations:
+    policies.kyverno.io/title: Require ArgoCD Sync Policy
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Application
+    policies.kyverno.io/description: >-
+      Ensures ArgoCD Applications have appropriate sync policies configured.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-sync-options
+      match:
+        any:
+          - resources:
+              kinds:
+                - Application
+              namespaces:
+                - argocd
+      validate:
+        message: "ArgoCD Applications must have sync policy with prune and self-heal."
+        pattern:
+          spec:
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+
+---
+# Restrict ArgoCD Application destinations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-argocd-destinations
+  annotations:
+    policies.kyverno.io/title: Restrict ArgoCD Destinations
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Application
+    policies.kyverno.io/description: >-
+      Prevents ArgoCD Applications from deploying to system namespaces.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: restrict-system-namespaces
+      match:
+        any:
+          - resources:
+              kinds:
+                - Application
+              namespaces:
+                - argocd
+      validate:
+        message: "ArgoCD Applications cannot deploy to system namespaces."
+        pattern:
+          spec:
+            destination:
+              namespace: "!kube-system & !kube-public & !argocd & !kyverno"
+
+---
+# Require ArgoCD project reference
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-argocd-project
+  annotations:
+    policies.kyverno.io/title: Require ArgoCD Project
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Application
+    policies.kyverno.io/description: >-
+      Ensures ArgoCD Applications specify a project (not default).
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-project
+      match:
+        any:
+          - resources:
+              kinds:
+                - Application
+              namespaces:
+                - argocd
+      validate:
+        message: "ArgoCD Applications must specify a project other than 'default'."
+        pattern:
+          spec:
+            project: "!default & ?*"
+
+---
+# Validate AppProject configurations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-appproject
+  annotations:
+    policies.kyverno.io/title: Validate AppProject
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: AppProject
+    policies.kyverno.io/description: >-
+      Validates ArgoCD AppProject configurations for security.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: restrict-cluster-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppProject
+              namespaces:
+                - argocd
+      validate:
+        message: "AppProjects should not allow cluster-scoped resources without approval."
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.clusterResourceWhitelist[?group == '*' && kind == '*'] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+    - name: require-source-repos
+      match:
+        any:
+          - resources:
+              kinds:
+                - AppProject
+              namespaces:
+                - argocd
+      validate:
+        message: "AppProjects must specify allowed source repositories."
+        pattern:
+          spec:
+            sourceRepos:
+              - "?*"
+
+---
+# Add GitOps labels to resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-gitops-labels
+  annotations:
+    policies.kyverno.io/title: Add GitOps Labels
+    policies.kyverno.io/category: ArgoCD, GitOps
+    policies.kyverno.io/subject: All
+    policies.kyverno.io/description: >-
+      Adds GitOps tracking labels to resources managed by ArgoCD.
+spec:
+  rules:
+    - name: add-argocd-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - Service
+                - ConfigMap
+                - Secret
+      preconditions:
+        all:
+          - key: "{{ request.object.metadata.labels.\"app.kubernetes.io/instance\" || '' }}"
+            operator: NotEquals
+            value: ""
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(managed-by): "argocd"
+              +(gitops): "true"
+
+---
+# Require Flux GitRepository authentication
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-flux-auth
+  annotations:
+    policies.kyverno.io/title: Require Flux GitRepository Authentication
+    policies.kyverno.io/category: Flux, GitOps
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: GitRepository
+    policies.kyverno.io/description: >-
+      Ensures Flux GitRepository resources use authentication.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-secret-ref
+      match:
+        any:
+          - resources:
+              kinds:
+                - GitRepository
+      validate:
+        message: "Flux GitRepository must reference a secret for authentication."
+        pattern:
+          spec:
+            secretRef:
+              name: "?*"
+
+---
+# Validate Flux Kustomization
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-flux-kustomization
+  annotations:
+    policies.kyverno.io/title: Validate Flux Kustomization
+    policies.kyverno.io/category: Flux, GitOps
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Kustomization
+    policies.kyverno.io/description: >-
+      Validates Flux Kustomization configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-prune
+      match:
+        any:
+          - resources:
+              kinds:
+                - Kustomization
+              namespaces:
+                - flux-system
+      validate:
+        message: "Flux Kustomization must enable prune for proper garbage collection."
+        pattern:
+          spec:
+            prune: true
+    - name: require-health-checks
+      match:
+        any:
+          - resources:
+              kinds:
+                - Kustomization
+              namespaces:
+                - flux-system
+      validate:
+        message: "Production Flux Kustomization should enable health checks."
+        pattern:
+          spec:
+            =(healthChecks):
+              - apiVersion: "?*"
+                kind: "?*"

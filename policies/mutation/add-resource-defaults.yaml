@@ -1,0 +1,194 @@
+# Mutation Policies - Add Resource Defaults
+# Automatically adds default resource requests and limits
+
+---
+# Add default resource requests and limits
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-default-resources
+  annotations:
+    policies.kyverno.io/title: Add Default Resources
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      Adds default CPU and memory requests and limits to containers that don't
+      specify them. This ensures resource management even for misconfigured pods.
+spec:
+  rules:
+    - name: add-default-requests-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                resources:
+                  requests:
+                    +(memory): "128Mi"
+                    +(cpu): "100m"
+                  limits:
+                    +(memory): "256Mi"
+                    +(cpu): "500m"
+
+---
+# Add ephemeral storage limits
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-ephemeral-storage-limits
+  annotations:
+    policies.kyverno.io/title: Add Ephemeral Storage Limits
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds default ephemeral storage limits to prevent nodes from running
+      out of disk space.
+spec:
+  rules:
+    - name: add-ephemeral-storage
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                resources:
+                  limits:
+                    +(ephemeral-storage): "1Gi"
+                  requests:
+                    +(ephemeral-storage): "500Mi"
+
+---
+# Set resource requests based on namespace tiers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: set-namespace-tier-resources
+  annotations:
+    policies.kyverno.io/title: Set Namespace Tier Resources
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Sets different default resources based on namespace tier (production gets
+      more resources than development).
+spec:
+  rules:
+    - name: production-defaults
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - production
+                - prod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                resources:
+                  requests:
+                    +(memory): "256Mi"
+                    +(cpu): "250m"
+                  limits:
+                    +(memory): "1Gi"
+                    +(cpu): "1000m"
+    - name: staging-defaults
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - staging
+                - stage
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                resources:
+                  requests:
+                    +(memory): "128Mi"
+                    +(cpu): "100m"
+                  limits:
+                    +(memory): "512Mi"
+                    +(cpu): "500m"
+    - name: development-defaults
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - development
+                - dev
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - (name): "*"
+                resources:
+                  requests:
+                    +(memory): "64Mi"
+                    +(cpu): "50m"
+                  limits:
+                    +(memory): "256Mi"
+                    +(cpu): "250m"
+
+---
+# Add priority class based on namespace
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-priority-class
+  annotations:
+    policies.kyverno.io/title: Add Priority Class
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Adds appropriate priority class to pods based on namespace.
+spec:
+  rules:
+    - name: production-priority
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - production
+                - prod
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(priorityClassName): "high-priority"
+    - name: default-priority
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - production
+                - prod
+                - kube-system
+      mutate:
+        patchStrategicMerge:
+          spec:
+            +(priorityClassName): "default-priority"

@@ -1,0 +1,277 @@
+# Istio Service Mesh Policies
+# Policies for Istio service mesh governance
+
+---
+# Require Istio sidecar injection
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-istio-sidecar
+  annotations:
+    policies.kyverno.io/title: Require Istio Sidecar Injection
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod, Namespace
+    policies.kyverno.io/description: >-
+      Ensures Istio sidecar injection is enabled for all application namespaces.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-sidecar-injection-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-*
+                - istio-system
+                - default
+                - kyverno
+      validate:
+        message: "Namespaces must have Istio sidecar injection enabled."
+        pattern:
+          metadata:
+            labels:
+              istio-injection: "enabled"
+
+---
+# Add Istio injection label to namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-istio-injection-label
+  annotations:
+    policies.kyverno.io/title: Add Istio Injection Label
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Automatically adds Istio injection label to new namespaces.
+spec:
+  rules:
+    - name: add-injection-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-*
+                - istio-system
+                - default
+                - kyverno
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            labels:
+              +(istio-injection): "enabled"
+
+---
+# Require mTLS for services
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-istio-mtls
+  annotations:
+    policies.kyverno.io/title: Require Istio mTLS
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: PeerAuthentication
+    policies.kyverno.io/description: >-
+      Ensures PeerAuthentication resources enforce STRICT mTLS mode.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-strict-mtls
+      match:
+        any:
+          - resources:
+              kinds:
+                - PeerAuthentication
+      validate:
+        message: "PeerAuthentication must use STRICT mTLS mode."
+        pattern:
+          spec:
+            mtls:
+              mode: "STRICT"
+
+---
+# Generate default PeerAuthentication
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-peer-authentication
+  annotations:
+    policies.kyverno.io/title: Generate PeerAuthentication
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/subject: PeerAuthentication
+    policies.kyverno.io/description: >-
+      Generates default PeerAuthentication for namespaces with Istio enabled.
+spec:
+  rules:
+    - name: generate-mtls-policy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  istio-injection: enabled
+      generate:
+        apiVersion: security.istio.io/v1beta1
+        kind: PeerAuthentication
+        name: default
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          spec:
+            mtls:
+              mode: STRICT
+
+---
+# Validate AuthorizationPolicy
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-authorization-policy
+  annotations:
+    policies.kyverno.io/title: Validate AuthorizationPolicy
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: AuthorizationPolicy
+    policies.kyverno.io/description: >-
+      Validates Istio AuthorizationPolicy configurations.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-principals
+      match:
+        any:
+          - resources:
+              kinds:
+                - AuthorizationPolicy
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.action || 'ALLOW' }}"
+            operator: Equals
+            value: "ALLOW"
+      validate:
+        message: "ALLOW AuthorizationPolicies should specify principals or namespaces."
+        pattern:
+          spec:
+            rules:
+              - from:
+                  - source:
+                      principals: ["?*"] | namespaces: ["?*"]
+
+---
+# Require VirtualService for external traffic
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-virtualservice-for-gateway
+  annotations:
+    policies.kyverno.io/title: Require VirtualService for Gateway
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Gateway
+    policies.kyverno.io/description: >-
+      Validates Gateway resources have associated VirtualService.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: check-virtualservice-exists
+      match:
+        any:
+          - resources:
+              kinds:
+                - Gateway
+      context:
+        - name: vs_count
+          apiCall:
+            urlPath: "/apis/networking.istio.io/v1beta1/namespaces/{{request.namespace}}/virtualservices"
+            jmesPath: "items[?spec.gateways[?contains(@, '{{request.object.metadata.name}}')]] | length(@)"
+      validate:
+        message: "Gateway must have at least one VirtualService referencing it."
+        deny:
+          conditions:
+            any:
+              - key: "{{ vs_count }}"
+                operator: LessThan
+                value: 1
+
+---
+# Validate DestinationRule TLS settings
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: validate-destinationrule-tls
+  annotations:
+    policies.kyverno.io/title: Validate DestinationRule TLS
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: DestinationRule
+    policies.kyverno.io/description: >-
+      Ensures DestinationRules use appropriate TLS settings.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-tls-mode
+      match:
+        any:
+          - resources:
+              kinds:
+                - DestinationRule
+      validate:
+        message: "DestinationRule should specify TLS mode ISTIO_MUTUAL for internal services."
+        anyPattern:
+          - spec:
+              trafficPolicy:
+                tls:
+                  mode: "ISTIO_MUTUAL"
+          - spec:
+              trafficPolicy:
+                tls:
+                  mode: "DISABLE"
+              host: "*external*"
+
+---
+# Add Istio annotations to Services
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-istio-service-annotations
+  annotations:
+    policies.kyverno.io/title: Add Istio Service Annotations
+    policies.kyverno.io/category: Istio, Service Mesh
+    policies.kyverno.io/subject: Service
+    policies.kyverno.io/description: >-
+      Adds Istio-specific annotations to services for proper mesh integration.
+spec:
+  rules:
+    - name: add-circuit-breaker-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Service
+              namespaces:
+                - "!kube-*"
+                - "!istio-system"
+      mutate:
+        patchStrategicMerge:
+          metadata:
+            annotations:
+              +(istio.io/enable-circuit-breaker): "true"

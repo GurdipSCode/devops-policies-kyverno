@@ -1,0 +1,208 @@
+# Generation Policies - NetworkPolicy
+# Automatically generates network policies for namespaces
+
+---
+# Generate default deny NetworkPolicy for new namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-networkpolicy
+  annotations:
+    policies.kyverno.io/title: Add Network Policy
+    policies.kyverno.io/category: Multi-Tenancy, EKS Best Practices
+    policies.kyverno.io/subject: NetworkPolicy
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/description: >-
+      By default, Kubernetes allows communications across all Pods within a cluster.
+      The NetworkPolicy resource and a CNI plug-in that supports NetworkPolicy must
+      be used to restrict communications. A default NetworkPolicy should be configured
+      for each Namespace to default deny all ingress and egress traffic to the Pods
+      in the Namespace. Application teams can then configure additional NetworkPolicy
+      resources to allow desired traffic to application Pods from select sources.
+      This policy will create a new NetworkPolicy resource named `default-deny`
+      which will deny all traffic anytime a new Namespace is created.
+spec:
+  rules:
+    - name: default-deny
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - default
+                - kyverno
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: default-deny
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            # Select all pods in the namespace
+            podSelector: {}
+            # Deny all traffic
+            policyTypes:
+              - Ingress
+              - Egress
+
+---
+# Generate NetworkPolicy for existing namespaces
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-networkpolicy-existing
+  annotations:
+    policies.kyverno.io/title: Generate NetworkPolicy to Existing Namespaces
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace, NetworkPolicy
+    policies.kyverno.io/minversion: 1.7.0
+    policies.kyverno.io/description: >-
+      A NetworkPolicy is often a critical piece when provisioning new Namespaces,
+      but there may be existing Namespaces which also need the same resource.
+      This policy creates a new NetworkPolicy for existing Namespaces.
+spec:
+  generateExisting: true
+  rules:
+    - name: generate-existing-networkpolicy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - default
+                - kyverno
+      generate:
+        kind: NetworkPolicy
+        apiVersion: networking.k8s.io/v1
+        name: default-deny-existing
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              created-by: kyverno
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Egress
+
+---
+# Generate NetworkPolicy allowing DNS egress
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-allow-dns-policy
+  annotations:
+    policies.kyverno.io/title: Generate Allow DNS Policy
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/subject: NetworkPolicy
+    policies.kyverno.io/description: >-
+      Generates a NetworkPolicy that allows DNS egress to kube-dns.
+      This is typically needed alongside a default-deny policy.
+spec:
+  rules:
+    - name: allow-dns
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-public
+                - default
+                - kyverno
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: allow-dns-egress
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Egress
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                    podSelector:
+                      matchLabels:
+                        k8s-app: kube-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+---
+# Generate namespace-specific NetworkPolicy based on labels
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-team-network-policy
+  annotations:
+    policies.kyverno.io/title: Generate Team Network Policy
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/subject: NetworkPolicy
+    policies.kyverno.io/description: >-
+      Generates NetworkPolicy allowing ingress only from pods in the same team.
+spec:
+  rules:
+    - name: generate-team-netpol
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchExpressions:
+                  - key: team
+                    operator: Exists
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: allow-same-team
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              generated-by: kyverno
+              team: "{{request.object.metadata.labels.team}}"
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Ingress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        team: "{{request.object.metadata.labels.team}}"

@@ -1,0 +1,259 @@
+# Image Verification Policies
+# Verify container image signatures using Sigstore/Cosign
+
+---
+# Verify image signature with public key
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+  annotations:
+    policies.kyverno.io/title: Verify Image Signature
+    policies.kyverno.io/category: Software Supply Chain Security, EKS Best Practices
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.7.0
+    policies.kyverno.io/description: >-
+      Using the Cosign project, OCI images may be signed to ensure supply chain
+      security is maintained. Those signatures can be verified before pulling into
+      a cluster. This policy checks the signature of container images to ensure
+      they have been signed by verifying against the provided public key.
+spec:
+  validationFailureAction: Audit
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "registry.company.com/*"
+          attestors:
+            - count: 1
+              entries:
+                - keys:
+                    publicKeys: |
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXYGR/EcE5qZng5x5HlkGXM4Qf9bS
+                      tKBFXXpW5hVu1Gqx/qZnCANgQEzExamplePublicKeyHere12345678==
+                      -----END PUBLIC KEY-----
+          mutateDigest: true
+          verifyDigest: true
+
+---
+# Verify images from multiple registries with keyless signing
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-keyless-signature
+  annotations:
+    policies.kyverno.io/title: Verify Keyless Signature
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verifies images signed with keyless signing using OIDC identity.
+      Useful for images signed in CI/CD pipelines using GitHub Actions or
+      similar OIDC providers.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: verify-keyless
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/myorg/*"
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subject: "https://github.com/myorg/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          mutateDigest: true
+          verifyDigest: true
+
+---
+# Verify attestations (SBOM, vulnerability scans, etc.)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-attestations
+  annotations:
+    policies.kyverno.io/title: Verify Image Attestations
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.8.0
+    policies.kyverno.io/description: >-
+      Verifies that images have required attestations such as SBOM,
+      vulnerability scan results, or SLSA provenance.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: verify-sbom-attestation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "registry.company.com/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXYGR/EcE5qZng5x5HlkGXM4Qf9bS
+                      ExamplePublicKeyHere12345678901234567890123456789012345==
+                      -----END PUBLIC KEY-----
+          attestations:
+            - predicateType: https://spdx.dev/Document
+              conditions:
+                - all:
+                    - key: "{{ creationInfo.created }}"
+                      operator: NotEquals
+                      value: ""
+            - predicateType: https://cosign.sigstore.dev/attestation/vuln/v1
+              conditions:
+                - all:
+                    - key: "{{ scanner.result.summary.CRITICAL }}"
+                      operator: Equals
+                      value: 0
+                    - key: "{{ scanner.result.summary.HIGH }}"
+                      operator: LessThanOrEquals
+                      value: 5
+
+---
+# Verify SLSA provenance
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-slsa-provenance
+  annotations:
+    policies.kyverno.io/title: Verify SLSA Provenance
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verifies that images have SLSA provenance attestations from trusted
+      build systems.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: verify-slsa
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "registry.company.com/*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/myorg/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+          attestations:
+            - predicateType: https://slsa.dev/provenance/v0.2
+              conditions:
+                - all:
+                    - key: "{{ invocation.configSource.uri }}"
+                      operator: Equals
+                      value: "git+https://github.com/myorg/myrepo@refs/heads/main"
+                    - key: "{{ buildType }}"
+                      operator: Equals
+                      value: "https://github.com/slsa-framework/slsa-github-generator/container@v1"
+
+---
+# Require all images to be signed (global enforcement)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+  annotations:
+    policies.kyverno.io/title: Require All Images Signed
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires all container images to be signed, regardless of registry.
+      Uses a catch-all pattern to ensure no unsigned images are deployed.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: require-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "*"
+          required: true
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXYGR/EcE5qZng5x5HlkGXM4Qf9bS
+                      ExamplePublicKeyReplaceWithYourOwnKey1234567890123456==
+                      -----END PUBLIC KEY-----
+
+---
+# Skip verification for specific system images
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-images-with-exceptions
+  annotations:
+    policies.kyverno.io/title: Verify Images with Exceptions
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Verifies image signatures while allowing specific system images
+      that cannot be signed.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: verify-with-skip
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "*"
+          skipImageReferences:
+            - "k8s.gcr.io/*"
+            - "registry.k8s.io/*"
+            - "gcr.io/google-containers/*"
+          required: true
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXYGR/EcE5qZng5x5HlkGXM4Qf9bS
+                      ExamplePublicKeyReplaceWithYourOwnKey1234567890123456==
+                      -----END PUBLIC KEY-----

@@ -1,0 +1,253 @@
+# RBAC Policies
+# Policies for Role-Based Access Control enforcement
+
+---
+# Restrict ClusterRoleBinding to admin users
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-clusterrolebinding
+  annotations:
+    policies.kyverno.io/title: Restrict ClusterRoleBinding Creation
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRoleBinding
+    policies.kyverno.io/description: >-
+      ClusterRoleBindings can grant cluster-wide permissions. This policy
+      restricts who can create ClusterRoleBindings.
+spec:
+  validationFailureAction: Audit
+  background: false
+  rules:
+    - name: restrict-clusterrolebinding-creation
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterRoleBinding
+      exclude:
+        any:
+          - subjects:
+              - kind: Group
+                name: "system:masters"
+          - subjects:
+              - kind: ServiceAccount
+                name: kyverno
+                namespace: kyverno
+      validate:
+        message: "ClusterRoleBindings can only be created by cluster admins."
+        deny: {}
+
+---
+# Disallow binding to cluster-admin
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-cluster-admin-binding
+  annotations:
+    policies.kyverno.io/title: Disallow Cluster Admin Binding
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: ClusterRoleBinding, RoleBinding
+    policies.kyverno.io/description: >-
+      Binding to the cluster-admin ClusterRole grants full access to the
+      cluster. This policy prevents bindings to cluster-admin except by
+      system accounts.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: disallow-cluster-admin-clusterrolebinding
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterRoleBinding
+      validate:
+        message: "Binding to cluster-admin ClusterRole is not allowed."
+        pattern:
+          roleRef:
+            name: "!cluster-admin"
+    - name: disallow-cluster-admin-rolebinding
+      match:
+        any:
+          - resources:
+              kinds:
+                - RoleBinding
+      validate:
+        message: "Binding to cluster-admin ClusterRole is not allowed."
+        pattern:
+          roleRef:
+            =(kind): "!ClusterRole | ?*"
+            =(name): "!cluster-admin | ?*"
+
+---
+# Restrict wildcard verbs in Roles/ClusterRoles
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-wildcard-verbs
+  annotations:
+    policies.kyverno.io/title: Disallow Wildcard Verbs
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRole, Role
+    policies.kyverno.io/description: >-
+      Wildcard verbs (*) grant all permissions on resources. This policy
+      prevents the use of wildcard verbs in custom Roles and ClusterRoles.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: disallow-wildcard-verbs-clusterrole
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterRole
+      exclude:
+        any:
+          - resources:
+              names:
+                - cluster-admin
+                - admin
+                - edit
+                - view
+                - system:*
+      validate:
+        message: "Wildcard verbs (*) are not allowed in ClusterRoles."
+        pattern:
+          rules:
+            - verbs: "!* & ?*"
+    - name: disallow-wildcard-verbs-role
+      match:
+        any:
+          - resources:
+              kinds:
+                - Role
+      validate:
+        message: "Wildcard verbs (*) are not allowed in Roles."
+        pattern:
+          rules:
+            - verbs: "!* & ?*"
+
+---
+# Restrict wildcard resources
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-wildcard-resources
+  annotations:
+    policies.kyverno.io/title: Disallow Wildcard Resources
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRole, Role
+    policies.kyverno.io/description: >-
+      Wildcard resources (*) grant permissions on all resources. This policy
+      prevents the use of wildcard resources in custom Roles and ClusterRoles.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: disallow-wildcard-resources-clusterrole
+      match:
+        any:
+          - resources:
+              kinds:
+                - ClusterRole
+      exclude:
+        any:
+          - resources:
+              names:
+                - cluster-admin
+                - admin
+                - edit
+                - view
+                - system:*
+      validate:
+        message: "Wildcard resources (*) are not allowed in ClusterRoles."
+        pattern:
+          rules:
+            - resources: "!* & ?*"
+
+---
+# Restrict sensitive resource access
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-secrets-access
+  annotations:
+    policies.kyverno.io/title: Restrict Secrets Access
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ClusterRole, Role
+    policies.kyverno.io/description: >-
+      Access to secrets should be restricted. This policy audits roles that
+      grant access to secrets.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: audit-secrets-access
+      match:
+        any:
+          - resources:
+              kinds:
+                - Role
+                - ClusterRole
+      exclude:
+        any:
+          - resources:
+              names:
+                - admin
+                - edit
+                - system:*
+      validate:
+        message: "Roles granting access to secrets require review."
+        deny:
+          conditions:
+            all:
+              - key: "secrets"
+                operator: AnyIn
+                value: "{{ request.object.rules[].resources[] }}"
+              - key: "{{ request.object.rules[?resources[?@ == 'secrets']].verbs[] }}"
+                operator: AnyIn
+                value:
+                  - "*"
+                  - get
+                  - list
+                  - watch
+
+---
+# Require specific service account for privileged operations
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-specific-sa-for-privileged
+  annotations:
+    policies.kyverno.io/title: Require Specific ServiceAccount for Privileged Pods
+    policies.kyverno.io/category: RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Privileged pods should use a specific, dedicated service account.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-privileged-sa
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      preconditions:
+        any:
+          - key: "{{ request.object.spec.containers[?securityContext.privileged] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: "Privileged pods must use a dedicated service account."
+        pattern:
+          spec:
+            serviceAccountName: "privileged-*"
