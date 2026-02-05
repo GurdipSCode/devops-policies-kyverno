@@ -1,0 +1,73 @@
+# GitGuardian configuration file
+# Docs: https://docs.gitguardian.com/ggshield-docs/configuration
+
+version: 2
+
+# ---------------------------------
+# Global settings
+# ---------------------------------
+verbose: false
+exit_zero: false   # fail CI if secrets are found
+
+# ---------------------------------
+# Paths to ignore
+# ---------------------------------
+paths-ignore:
+  - "**/*.md"
+  - "**/*.txt"
+  - "**/*.rego"
+  - "**/*.yaml"
+  - "**/*.yml"
+  - "**/*.json"
+
+  # Build artifacts
+  - "dist/**"
+  - "build/**"
+  - "out/**"
+
+  # Tooling
+  - ".terraform/**"
+  - "node_modules/**"
+  - ".venv/**"
+  - ".cache/**"
+
+# ---------------------------------
+# Ignore specific findings
+# (use sparingly – better to rotate secrets)
+# ---------------------------------
+ignore-known-secrets: false
+
+# ---------------------------------
+# Allowlist patterns (common false positives)
+# ---------------------------------
+allowlist:
+  regexes:
+    # Terraform / OPA placeholders
+    - "example"
+    - "changeme"
+    - "dummy"
+    - "test-secret"
+    - "fake-key"
+
+    # Azure / AWS placeholders
+    - "00000000-0000-0000-0000-000000000000"
+    - "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  paths:
+    - "**/test/**"
+    - "**/tests/**"
+    - "**/examples/**"
+    - "**/sample/**"
+
+# ---------------------------------
+# Scan configuration
+# ---------------------------------
+scan:
+  secrets: true
+  infra: false   # enable only if you want IaC misconfig scanning
+
+# ---------------------------------
+# CI behaviour
+# ---------------------------------
+ci:
+  fail_on_secrets: true
