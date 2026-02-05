@@ -1,0 +1,89 @@
+# ----------------------------
+# OPA / Rego
+# ----------------------------
+*.bundle
+*.tar.gz
+*.tgz
+*.opa
+*.policy
+
+# OPA test outputs
+.coverage
+coverage.out
+coverage.json
+
+# ----------------------------
+# Conftest
+# ----------------------------
+.conftest/
+conftest.out
+conftest-results.json
+
+# ----------------------------
+# Build / dist
+# ----------------------------
+dist/
+build/
+out/
+
+# ----------------------------
+# Logs
+# ----------------------------
+*.log
+
+# ----------------------------
+# Temp files
+# ----------------------------
+*.tmp
+*.swp
+*.swo
+*.bak
+*.old
+.tmp/
+.cache/
+
+# ----------------------------
+# OS files
+# ----------------------------
+.DS_Store
+Thumbs.db
+
+# ----------------------------
+# IDEs / Editors
+# ----------------------------
+.vscode/
+.idea/
+*.iml
+
+# ----------------------------
+# Node (if used for tooling)
+# ----------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ----------------------------
+# Python (if used for helpers)
+# ----------------------------
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ----------------------------
+# Terraform (common in OPA repos)
+# ----------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+terraform.tfvars.json
+
+# ----------------------------
+# CI / secrets
+# ----------------------------
+.env
+.env.*
+*.secret
+*.secrets
